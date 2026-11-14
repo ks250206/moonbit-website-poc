@@ -1,0 +1,78 @@
+name: Test and deploy Lumen
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lumen-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: Build and test real JS + Wasm
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install official MoonBit toolchain
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh -o /tmp/install-moon.sh
+          bash /tmp/install-moon.sh
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Record toolchain and check formatting
+        run: |
+          moon version --all
+          moon fmt --check
+      - name: Build both compilation targets
+        run: bash scripts/build.sh
+      - name: MoonBit white-box tests
+        run: moon test engine --target wasm
+      - name: Actual Wasm integration tests against an independent solver
+        run: node --test tests/engine.test.mjs
+      - name: Install browser test dependencies
+        run: |
+          pip install -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+      - name: Browser tests on a real HTTP project subpath
+        run: python tests/browser_test.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-screenshots
+          path: artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lumen-static-site
+          path: dist/
+          include-hidden-files: true
+          retention-days: 7
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          path: dist/
+  deploy:
+    name: Deploy GitHub Pages
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/deploy-pages@v4
+        id: deployment
